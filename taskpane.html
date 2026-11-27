@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel de Seguimiento</title>
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<style>
+  body { font-family: "Segoe UI", sans-serif; margin: 0; font-size: 13px; color: #222; }
+  header { background: #107c41; color: #fff; padding: 12px 14px; }
+  .h1 { font-size: 16px; font-weight: 600; } .h2 { font-size: 12px; opacity: .85; }
+  .bar { display: flex; gap: 6px; padding: 8px 10px; }
+  button { border: 0; border-radius: 4px; padding: 6px 10px; cursor: pointer; font: inherit; }
+  .sec { background: #f3f2f1; } .reg { background: #107c41; color: #fff; width: 100%; margin-top: 6px; }
+  #msg { padding: 0 12px; min-height: 18px; color: #107c41; } #msg.err { color: #c50f1f; }
+  #lista { padding: 4px 10px 16px; }
+  .card { border: 1px solid #e1dfdd; border-left: 4px solid #f2c811; border-radius: 6px; padding: 10px; margin-bottom: 10px; background: #fff; }
+  .card.lock { border-left-color: #107c41; background: #f6fbf7; }
+  .t { font-weight: 600; margin-bottom: 4px; }
+  .b { font-size: 11px; padding: 1px 7px; border-radius: 10px; margin-left: 4px; font-weight: 500; }
+  .pen { background: #fff4ce; } .rev { background: #dff6dd; } .obs { background: #fde7e9; color: #a4262c; }
+  .det { color: #555; font-size: 12px; margin-bottom: 2px; } .vence { color: #777; font-size: 11px; margin-bottom: 6px; }
+  .ma { background: #eceff1; padding: 5px 7px; border-radius: 4px; margin-bottom: 6px; font-size: 12px; }
+  .ro { color: #444; }
+  select, textarea { width: 100%; box-sizing: border-box; margin-bottom: 6px; padding: 5px; font: inherit; border: 1px solid #c8c6c4; border-radius: 4px; background: #fffef0; }
+  textarea { height: 46px; resize: vertical; }
+  .drop { display: block; border: 2px dashed #8ac59f; border-radius: 6px; padding: 10px; text-align: center; cursor: pointer; background: #f3faf5; color: #444; }
+  .drop.on { background: #dff3e6; }
+  .vacio { color: #666; padding: 10px; }
+</style>
+</head>
+<body>
+<header><div class="h1" id="titulo">Panel de Seguimiento</div><div class="h2" id="subtitulo">Cargando…</div></header>
+<div class="bar"><button id="recargar" class="sec">↻ Recargar</button></div>
+<div id="msg"></div>
+<div id="lista"></div>
+<script>
+/* Un solo complemento, varios paneles: elige el panel según la tabla que tenga el Excel abierto.
+   Para agregar un panel nuevo: sumar una entrada a PANELES. No requiere volver a publicar el manifiesto. */
+const PANELES = [
+  { tabla: "tblMesEnCurso",   titulo: "Registro del área",          iniciar: panelRegistro },
+  { tabla: "tblProgramacion", titulo: "Programación del mes (MA)",  iniciar: panelPendiente }
+];
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function msg(t, err) { $("msg").textContent = t; $("msg").className = err ? "err" : ""; }
+async function run(fn) { try { await fn(); } catch (e) { msg("⚠ " + (e.message || e), true); console.error(e); } }
+
+Office.onReady(() => {
+  // Deja marcado el libro para que el panel se abra solo la próxima vez (patrón oficial "autoopen").
+  try { Office.context.document.settings.set("Office.AutoShowTaskpaneWithDocument", true); Office.context.document.settings.saveAsync(); } catch (e) {}
+  $("recargar").onclick = () => run(elegirPanel);
+  run(elegirPanel);
+});
+
+async function elegirPanel() {
+  const nombres = await Excel.run(async (ctx) => {
+    const t = ctx.workbook.tables.load("items/name"); await ctx.sync();
+    return t.items.map((x) => x.name);
+  });
+  const p = PANELES.find((x) => nombres.includes(x.tabla));
+  if (!p) {
+    $("subtitulo").textContent = "Este Excel no tiene un panel asignado";
+    $("lista").innerHTML = '<p class="vacio">Tablas reconocidas: ' + PANELES.map((x) => esc(x.tabla)).join(", ") + ".</p>";
+    return;
+  }
+  $("titulo").textContent = p.titulo;
+  await p.iniciar(p.tabla);
+}
+
+async function panelPendiente(tabla) {
+  $("subtitulo").textContent = "Tabla " + tabla;
+  $("lista").innerHTML = '<p class="vacio">Panel en construcción.</p>';
+}
+
+/* ---------- Panel: Registro del área ---------- */
+const OPC = ["", "Cumplido", "No cumplido", "No aplica"];
+let H = [], filas = [], TAB = "";
+const col = (n) => H.indexOf(n);
+const v = (f, n) => (col(n) >= 0 ? f[col(n)] || "" : "");
+
+async function panelRegistro(tabla) {
+  TAB = tabla;
+  await Excel.run(async (ctx) => {
+    const t = ctx.workbook.tables.getItem(tabla);
+    const h = t.getHeaderRowRange().load("values"), b = t.getDataBodyRange().load("values");
+    const ws = t.worksheet.getRange("D1").load("values");
+    await ctx.sync();
+    H = h.values[0].map(String);
+    filas = b.values.map((r) => r.map(String)); // sin filtrar: el índice debe coincidir con la fila de la tabla
+    $("subtitulo").textContent = String(ws.values[0][0] || "Registra el estado de tus compromisos del mes");
+  });
+  pintar();
+}
+
+function pintar() {
+  if (!filas.some((f) => v(f, "Compromiso"))) { $("lista").innerHTML = '<p class="vacio">Sin compromisos este mes.</p>'; return; }
+  $("lista").innerHTML = filas.map((f, i) => {
+    if (!v(f, "Compromiso")) return "";
+    const est = v(f, "Estado"), lock = v(f, "Bloqueado") === "Sí";
+    const cls = { "En revisión": "rev", "Observado": "obs", "Validado": "rev" }[est] || "pen";
+    const badge = '<span class="b ' + cls + '">' + esc(est || "Pendiente") + "</span>";
+    const ma = v(f, "Estado MA") ? '<div class="ma"><b>Medio Ambiente:</b> ' + esc(v(f, "Estado MA")) + (v(f, "Comentario MA") ? " — " + esc(v(f, "Comentario MA")) : "") + "</div>" : "";
+    const head = '<div class="t">' + esc(v(f, "Compromiso")) + " " + badge + '</div><div class="det">' + esc(v(f, "Detalle")) + '</div><div class="vence">Vence: ' + esc(v(f, "Vence")) + "</div>";
+    if (lock) return '<div class="card lock" data-i="' + i + '">' + head + '<div class="ro">' + esc(v(f, "Estado área")) + " · " + esc(v(f, "Comentario área")) + (v(f, "Evidencia área") ? " · 📎 " + esc(v(f, "Evidencia área")) : "") + "</div>" + ma + "</div>";
+    return '<div class="card" data-i="' + i + '">' + head + ma +
+      '<select id="e' + i + '">' + OPC.map((o) => "<option" + (o === v(f, "Estado área") ? " selected" : "") + ">" + o + "</option>").join("") + "</select>" +
+      '<textarea id="c' + i + '" placeholder="Comentario">' + esc(v(f, "Comentario área")) + "</textarea>" +
+      '<label class="drop" id="d' + i + '">📎 <span id="n' + i + '">' + esc(v(f, "Evidencia área") || "Arrastra la evidencia o haz clic") + '</span><input type="file" id="f' + i + '" hidden></label>' +
+      '<button class="reg" data-r="' + i + '">▶ Registrar</button></div>';
+  }).join("");
+  filas.forEach((f, i) => {
+    const inp = $("f" + i), d = $("d" + i);
+    if (inp) inp.onchange = (e) => ponerArchivo(i, e.target.files[0]);
+    if (d) {
+      d.addEventListener("dragover", (e) => { e.preventDefault(); d.classList.add("on"); });
+      d.addEventListener("dragleave", () => d.classList.remove("on"));
+      d.addEventListener("drop", (e) => { e.preventDefault(); d.classList.remove("on"); ponerArchivo(i, e.dataTransfer.files[0]); });
+    }
+  });
+  document.querySelectorAll(".reg").forEach((b) => b.onclick = () => run(() => registrar(+b.dataset.r)));
+  document.querySelectorAll(".card").forEach((c) => c.onclick = (e) => {
+    if (!/SELECT|TEXTAREA|BUTTON|INPUT|LABEL|SPAN/.test(e.target.tagName)) run(() => irAFila(+c.dataset.i));
+  });
+}
+
+// Por ahora guarda solo el nombre. La subida real a «Evidencias» requiere Microsoft Graph (etapa 2).
+function ponerArchivo(i, file) {
+  if (!file) return;
+  filas[i][col("Evidencia área")] = file.name;
+  $("n" + i).textContent = file.name;
+}
+
+async function registrar(i) {
+  const est = $("e" + i).value, com = $("c" + i).value.trim(), ev = v(filas[i], "Evidencia área");
+  if (!est || !com) { msg("Falta Estado o Comentario.", true); return; }
+  if (est === "Cumplido" && !ev) { msg("«Cumplido» requiere evidencia.", true); return; }
+  const f = filas[i].slice();
+  f[col("Estado área")] = est; f[col("Comentario área")] = com; f[col("Evidencia área")] = ev;
+  if (col("Estado") >= 0) f[col("Estado")] = "En revisión";
+  if (col("Bloqueado") >= 0) f[col("Bloqueado")] = "Sí";
+  await Excel.run(async (ctx) => {
+    ctx.workbook.tables.getItem(TAB).rows.getItemAt(i).values = [f];
+    await ctx.sync();
+  });
+  msg("✔ Registrado: " + v(f, "Compromiso") + ". Quedó En revisión.");
+  await panelRegistro(TAB);
+}
+
+async function irAFila(i) {
+  await Excel.run(async (ctx) => {
+    ctx.workbook.tables.getItem(TAB).rows.getItemAt(i).getRange().select();
+    await ctx.sync();
+  });
+}
+</script>
+</body>
+</html>
